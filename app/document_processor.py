@@ -15,7 +15,14 @@
 #
 # Copyright (C) 2024 Vincent Koc (https://github.com/vincentkoc)
 
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    UnstructuredWordDocumentLoader,
+    UnstructuredExcelLoader,
+    UnstructuredPowerPointLoader,
+    CSVLoader,
+    UnstructuredTSVLoader
+)
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
@@ -24,12 +31,25 @@ import shutil
 from .utils import load_config
 import streamlit as st
 import logging
+from pathlib import Path
 
 config = load_config()
 logger = logging.getLogger(__name__)
 
 DOCUMENTS_DIR = "./documents"
 os.makedirs(DOCUMENTS_DIR, exist_ok=True)
+
+SUPPORTED_EXTENSIONS = {
+    '.pdf': PyPDFLoader,
+    '.docx': UnstructuredWordDocumentLoader,
+    '.doc': UnstructuredWordDocumentLoader,
+    '.xlsx': UnstructuredExcelLoader,
+    '.xls': UnstructuredExcelLoader,
+    '.pptx': UnstructuredPowerPointLoader,
+    '.ppt': UnstructuredPowerPointLoader,
+    '.csv': CSVLoader,
+    '.tsv': UnstructuredTSVLoader
+}
 
 @st.cache_resource
 def get_embedding_function():
@@ -51,22 +71,46 @@ def get_vectorstore():
     embeddings = get_embedding_function()
     return Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
 
+def get_document_loader(file_path):
+    """Get the appropriate loader based on file extension."""
+    file_extension = Path(file_path).suffix.lower()
+    if file_extension not in SUPPORTED_EXTENSIONS:
+        raise ValueError(f"Unsupported file type: {file_extension}")
+    
+    loader_class = SUPPORTED_EXTENSIONS[file_extension]
+    
+    if file_extension in ['.xlsx', '.xls', '.tsv']:
+        return loader_class(file_path, mode="elements")
+    else:
+        return loader_class(file_path)
+
 def process_documents(uploaded_files, rebuild=False):
     if rebuild:
         clear_vectorstore()
 
     documents = []
     for file in uploaded_files:
-        file_path = os.path.join(DOCUMENTS_DIR, file.name)
-        with open(file_path, "wb") as f:
-            f.write(file.getvalue())
+        try:
+            file_path = os.path.join(DOCUMENTS_DIR, file.name)
+            with open(file_path, "wb") as f:
+                f.write(file.getvalue())
 
-        loader = PyPDFLoader(file_path)
-        docs = loader.load()
-        logger.info(f"Loaded {len(docs)} pages from {file.name}")
-        for doc in docs:
-            doc.metadata['source'] = file.name
-        documents.extend(docs)
+            # Get appropriate loader based on file type
+            loader = get_document_loader(file_path)
+            
+            # Load documents
+            docs = loader.load()
+            logger.info(f"Loaded {len(docs)} pages/elements from {file.name}")
+            
+            # Add source metadata
+            for doc in docs:
+                doc.metadata['source'] = file.name
+            documents.extend(docs)
+
+        except Exception as e:
+            logger.error(f"Error processing file {file.name}: {str(e)}")
+            st.error(f"Error processing file {file.name}: {str(e)}")
+            continue
 
     if not documents:
         logger.warning("No documents were loaded.")
